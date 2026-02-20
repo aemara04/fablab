@@ -617,19 +617,40 @@ function saveBookings(){
   const data=calendars.map(cal=>cal.getEvents().filter(e=>e.extendedProps.type==='reservation').map(e=>({title:e.title,start:e.start.toISOString(),end:e.end?e.end.toISOString():null,owner:e.extendedProps.owner})));
   localStorage.setItem('fablab_bookings',JSON.stringify(data));
 }
-function loadBookings(){
+// ── API HELPERS ──
+async function apiFetch(url,opts={}){
+  const res=await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||res.statusText);}
+  return res.json();
+}
+
+async function loadBookings(){
   try{
-    const data=JSON.parse(localStorage.getItem('fablab_bookings')||'[]');
-    data.forEach((printerEvents,i)=>{
+    const bookings=await apiFetch('/api/bookings');
+    bookings.forEach(b=>{
+      const i=b.printer;
       if(!calendars[i])return;
-      printerEvents.forEach(ev=>calendars[i].addEvent({title:ev.title,start:ev.start,end:ev.end,extendedProps:{type:'reservation',owner:ev.owner}}));
+      calendars[i].addEvent({id:b.id,title:b.owner,start:b.start,end:b.end,extendedProps:{type:'reservation',owner:b.owner,dbId:b.id}});
     });
   }catch(e){console.warn('Could not load bookings',e);}
 }
-function getHistory(){try{return JSON.parse(localStorage.getItem('fablab_history')||'[]');}catch(e){return[];}}
-function addToHistory(entry){const h=getHistory();h.unshift(entry);localStorage.setItem('fablab_history',JSON.stringify(h));}
-function getStoredUsers(){try{return JSON.parse(localStorage.getItem('fablab_users')||'null');}catch(e){return null;}}
-function saveUsers(csv){localStorage.setItem('fablab_users',JSON.stringify(csv));}
+
+async function saveBooking(printerIdx,owner,start,end){
+  const id=crypto.randomUUID();
+  await apiFetch('/api/bookings',{method:'POST',body:JSON.stringify({id,printer:printerIdx,owner,title:owner,start:start.toISOString(),end:end.toISOString()})});
+  return id;
+}
+
+async function updateBooking(dbId,start,end){
+  await apiFetch(`/api/bookings/${dbId}`,{method:'PUT',body:JSON.stringify({start:start.toISOString(),end:end.toISOString()})});
+}
+
+async function deleteBookingFromDB(dbId){
+  await apiFetch(`/api/bookings/${dbId}`,{method:'DELETE'});
+}
+
+function getStoredUsers(){return null;}
+function saveUsers(){toast('Edit users.csv on the server to update users.');}
 
 // ── CSV EXPORT ──
 function exportWeekCSV(){
@@ -661,26 +682,14 @@ function doLogin(){
   errEl.textContent='';
   if(!name||!pin){errEl.textContent='Please enter your name and PIN.';return;}
 
-  // Check localStorage users first, then fall back to users.csv
-  const storedUsers=getStoredUsers();
-  if(storedUsers){
-    const lines=storedUsers.trim().split('\n').slice(1);
-    const user=lines.map(l=>l.split(',')).find(p=>p[0]&&p[0].trim().toLowerCase()===name.toLowerCase()&&p[1]&&p[1].trim()===pin.trim());
-    if(!user){errEl.textContent='Name or PIN not found. Try again.';return;}
-    currentUser={name:user[0].trim(),role:(user[2]||'read').trim().toLowerCase()};
-    launchApp();return;
-  }
-
-  Papa.parse('users.csv',{
-    download:true,header:true,
-    complete:results=>{
-      const user=results.data.find(u=>u.name&&u.name.toLowerCase().trim()===name.toLowerCase()&&String(u.pin).trim()===String(pin).trim());
-      if(!user){errEl.textContent='Name or PIN not found. Try again.';return;}
-      currentUser={name:user.name,role:(user.role||'read').toLowerCase().trim()};
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,pin})})
+    .then(res=>res.json().then(data=>({ok:res.ok,data})))
+    .then(({ok,data})=>{
+      if(!ok){errEl.textContent=data.error||'Login failed.';return;}
+      currentUser={name:data.name,role:data.role};
       launchApp();
-    },
-    error:()=>{currentUser={name,role:'read'};errEl.textContent='Could not load users.csv — signed in as read-only.';setTimeout(launchApp,1000);}
-  });
+    })
+    .catch(()=>{errEl.textContent='Could not connect to server.';});
 }
 
 function launchApp(){
@@ -703,8 +712,8 @@ function launchApp(){
   initAdminPanel();
   document.getElementById('btn-export-csv').addEventListener('click',exportWeekCSV);
   document.getElementById('btn-clear-history').addEventListener('click',async()=>{
-    const ok=await choiceModal({title:'Clear History',message:'Permanently delete all booking history?',confirmText:'Clear',danger:true});
-    if(ok){localStorage.removeItem('fablab_history');renderHistory();toast('History cleared.');}
+    const ok=await choiceModal({title:'Clear History',message:'Note: This clears the display. Bookings are stored in the server database.',confirmText:'OK',danger:false});
+    if(ok)renderHistory();
   });
   document.getElementById('history-filter-printer').addEventListener('change',renderHistory);
   document.getElementById('history-filter-status').addEventListener('change',renderHistory);
@@ -855,7 +864,12 @@ function renderBookingList(containerId,bookings,isPast){
     if(!isPast){
       row.querySelector('.br-delete').addEventListener('click',async()=>{
         const confirmed=await deleteModal(`your reservation on ${PRINTER_NAMES[pi]}`);
-        if(confirmed){addToHistory({printer:PRINTER_NAMES[pi],owner:ev.extendedProps.owner,start:ev.start.toISOString(),end:ev.end?ev.end.toISOString():null,status:'deleted',deletedAt:new Date().toISOString()});ev.remove();saveBookings();updateAllStats();renderMyBookings();toast('Reservation deleted.');}
+        if(confirmed){
+          try{
+            await deleteBookingFromDB(ev.extendedProps.dbId);
+            ev.remove();updateAllStats();renderMyBookings();toast('Reservation deleted.');
+          }catch(e){toast('Failed to delete: '+e.message);}
+        }
       });
     }
     list.appendChild(row);
@@ -864,39 +878,33 @@ function renderBookingList(containerId,bookings,isPast){
 }
 
 // ── HISTORY ──
-function renderHistory(){
+async function renderHistory(){
   const container=document.getElementById('history-container');
   const filterPrinter=document.getElementById('history-filter-printer').value;
   const filterStatus=document.getElementById('history-filter-status').value;
-
-  // Build combined list: active bookings + history entries
-  let rows=[];
-  // Active bookings from calendars
-  calendars.forEach((cal,i)=>{
-    cal.getEvents().filter(e=>e.extendedProps.type==='reservation').forEach(ev=>{
-      rows.push({printer:PRINTER_NAMES[i],printerIdx:i,owner:ev.extendedProps.owner,start:ev.start.toISOString(),end:ev.end?ev.end.toISOString():null,status:'active'});
+  container.innerHTML='<div class="history-empty">Loading...</div>';
+  try{
+    let bookings=await apiFetch('/api/bookings');
+    // Apply filters
+    if(filterPrinter!=='all')bookings=bookings.filter(b=>b.printer===parseInt(filterPrinter));
+    if(filterStatus==='deleted'){container.innerHTML='<div class="history-empty">Deleted booking history not yet implemented on server.</div>';return;}
+    bookings.sort((a,b)=>new Date(b.start)-new Date(a.start));
+    if(!bookings.length){container.innerHTML='<div class="history-empty">No records found.</div>';return;}
+    const table=document.createElement('table');table.className='history-table';
+    table.innerHTML=`<thead><tr><th>Printer</th><th>User</th><th>Date &amp; Start</th><th>End</th><th>Duration</th><th>Status</th></tr></thead>`;
+    const tbody=document.createElement('tbody');
+    const now=new Date();
+    bookings.forEach(b=>{
+      const start=new Date(b.start),end=b.end?new Date(b.end):null;
+      const mins=end?Math.round((end-start)/60000):'?';
+      const isPast=end&&end<now;
+      const tr=document.createElement('tr');
+      const color=PRINTER_COLORS[b.printer]||'#888';
+      tr.innerHTML=`<td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>${PRINTER_NAMES[b.printer]||'Unknown'}</span></td><td>${b.owner}</td><td>${start.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td>${end?end.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'—'}</td><td>${mins} min</td><td><span class="history-tag ${isPast?'deleted':'active'}">${isPast?'past':'active'}</span></td>`;
+      tbody.appendChild(tr);
     });
-  });
-  // Deleted entries from history
-  getHistory().forEach(h=>rows.push({...h,status:h.status||'deleted'}));
-
-  // Filter
-  if(filterPrinter!=='all')rows=rows.filter(r=>r.printer===PRINTER_NAMES[parseInt(filterPrinter)]);
-  if(filterStatus!=='all')rows=rows.filter(r=>r.status===filterStatus);
-  rows.sort((a,b)=>new Date(b.start)-new Date(a.start));
-
-  if(!rows.length){container.innerHTML='<div class="history-empty">No records found.</div>';return;}
-  const table=document.createElement('table');table.className='history-table';
-  table.innerHTML=`<thead><tr><th>Printer</th><th>User</th><th>Date &amp; Start</th><th>End</th><th>Duration</th><th>Status</th></tr></thead>`;
-  const tbody=document.createElement('tbody');
-  rows.forEach(h=>{
-    const start=new Date(h.start),end=h.end?new Date(h.end):null;
-    const mins=end?Math.round((end-start)/60000):'?';
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:${PRINTER_COLORS[PRINTER_NAMES.indexOf(h.printer)]};flex-shrink:0"></span>${h.printer}</span></td><td>${h.owner}</td><td>${start.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td>${end?end.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'—'}</td><td>${mins} min</td><td><span class="history-tag ${h.status}">${h.status}</span></td>`;
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);container.innerHTML='';container.appendChild(table);
+    table.appendChild(tbody);container.innerHTML='';container.appendChild(table);
+  }catch(e){container.innerHTML='<div class="history-empty">Failed to load history.</div>';}
 }
 
 // ── ADMIN PANEL ──
@@ -1003,8 +1011,11 @@ function makeCalendar(idx){
       const mins=await durationModal(printerName,timeStr);if(!mins)return;
       const end=new Date(info.start.getTime()+mins*60000);
       if(hasConflict(null,info.start,end)){toast('⚠ That slot conflicts with an existing booking.');return;}
-      cal.addEvent({title:currentUser.name,start:info.start,end,extendedProps:{type:'reservation',owner:currentUser.name}});
-      toast(`✓ Booked ${printerName} for ${mins} min`);saveBookings();updateAllStats();refreshOverview();
+      try{
+        const id=await saveBooking(idx,currentUser.name,info.start,end);
+        cal.addEvent({id,title:currentUser.name,start:info.start,end,extendedProps:{type:'reservation',owner:currentUser.name,dbId:id}});
+        toast(`✓ Booked ${printerName} for ${mins} min`);updateAllStats();refreshOverview();
+      }catch(e){toast('Failed to save booking: '+e.message);}
     },
     eventDrop:async function(info){
       const ev=info.event;
@@ -1012,7 +1023,8 @@ function makeCalendar(idx){
       if(currentUser.role!=='admin'&&ev.extendedProps.owner!==currentUser.name){toast('You can only move your own reservations.');info.revert();return;}
       const end=ev.end||new Date(ev.start.getTime()+30*60000);
       if(hasConflict(ev,ev.start,end)){const ok=await choiceModal({title:'Conflict',message:'This overlaps another booking. Move anyway?',confirmText:'Move Anyway',cancelText:'Undo'});if(!ok){info.revert();return;}}
-      toast('Reservation moved.');saveBookings();updateAllStats();refreshOverview();
+      try{await updateBooking(ev.extendedProps.dbId,ev.start,end);toast('Reservation moved.');updateAllStats();refreshOverview();}
+      catch(e){toast('Failed to update: '+e.message);info.revert();}
     },
     eventResize:async function(info){
       const ev=info.event;
@@ -1020,14 +1032,20 @@ function makeCalendar(idx){
       if(currentUser.role!=='admin'&&ev.extendedProps.owner!==currentUser.name){toast('You can only resize your own reservations.');info.revert();return;}
       const end=ev.end||new Date(ev.start.getTime()+30*60000);
       if(hasConflict(ev,ev.start,end)){const ok=await choiceModal({title:'Conflict',message:'This resize overlaps another booking. Keep it?',confirmText:'Keep',cancelText:'Undo'});if(!ok){info.revert();return;}}
-      toast('Reservation updated.');saveBookings();updateAllStats();refreshOverview();
+      try{await updateBooking(ev.extendedProps.dbId,ev.start,end);toast('Reservation updated.');updateAllStats();refreshOverview();}
+      catch(e){toast('Failed to update: '+e.message);info.revert();}
     },
     eventClick:async function(info){
       const ev=info.event;
       if(currentUser.role==='read'){toast(`Booked by ${ev.extendedProps.owner}`);return;}
       if(currentUser.role!=='admin'&&ev.extendedProps.owner!==currentUser.name){toast('You can only delete your own reservations.');return;}
       const confirmed=await deleteModal(`${ev.title}'s reservation`);
-      if(confirmed){addToHistory({printer:printerName,owner:ev.extendedProps.owner,start:ev.start.toISOString(),end:ev.end?ev.end.toISOString():null,status:'deleted',deletedAt:new Date().toISOString()});ev.remove();toast('Deleted.');saveBookings();updateAllStats();refreshOverview();}
+      if(confirmed){
+        try{
+          await deleteBookingFromDB(ev.extendedProps.dbId);
+          ev.remove();toast('Deleted.');updateAllStats();refreshOverview();
+        }catch(e){toast('Failed to delete: '+e.message);}
+      }
     }
   });
   cal.render();return cal;
@@ -1035,7 +1053,12 @@ function makeCalendar(idx){
 
 function initCalendars(){
   for(let i=0;i<4;i++)calendars.push(makeCalendar(i));
-  loadBookings();updateAllStats();setInterval(updateAllStats,60000);
+  loadBookings().then(()=>{updateAllStats();refreshOverview();});
+  setInterval(()=>{
+    // Periodically reload bookings to stay in sync with other users
+    calendars.forEach(cal=>cal.getEvents().filter(e=>e.extendedProps.type==='reservation').forEach(e=>e.remove()));
+    loadBookings().then(()=>{updateAllStats();refreshOverview();});
+  },30000);
 }
 </script>
 </body>
