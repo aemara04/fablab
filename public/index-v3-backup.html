@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GreenGATE — 3D Printer Scheduler</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@400;700&family=Source+Sans+3:wght@300;400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    :root {
+      --navy:       #1a2332;
+      --navy-dark:  #111820;
+      --navy-hover: #253447;
+      --gold:       #f0a500;
+      --gold-lt:    #fff8e1;
+      --green:      #00613a;
+      --white:      #ffffff;
+      --off-white:  #f5f5f3;
+      --border:     #dde0e3;
+      --text:       #1a2332;
+      --muted:      #5a6270;
+      --red:        #b91c1c;
+      --avail-green:#16a34a;
+      --avail-bg:   #dcfce7;
+      --busy-red:   #dc2626;
+      --busy-bg:    #fee2e2;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Source Sans 3', sans-serif; background: var(--off-white); color: var(--text); min-height: 100vh; }
+
+    /* ═══════════════════════════════════════════════════════
+       LOGIN
+    ═══════════════════════════════════════════════════════ */
+    #login-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      background: var(--navy-dark);
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity .35s ease;
+    }
+    #login-overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .login-card {
+      background: var(--white); width: 420px; max-width: 94vw;
+      border-top: 5px solid var(--gold); border-radius: 2px;
+      padding: 44px 40px 40px;
+      animation: rise .4s cubic-bezier(.22,1,.36,1);
+    }
+    @keyframes rise { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:none; } }
+
+    .login-institution { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
+    .uvm-shield { width: 38px; height: 38px; flex-shrink: 0; background: var(--navy); clip-path: polygon(50% 0%,100% 15%,100% 60%,50% 100%,0% 60%,0% 15%); display: flex; align-items: center; justify-content: center; }
+    .uvm-shield::after { content: 'V'; color: var(--gold); font-family: 'Merriweather', serif; font-size: 15px; font-weight: 700; }
+    .login-institution-text .uni  { font-size: .74rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .login-institution-text .dept { font-size: .88rem; font-weight: 700; color: var(--navy); margin-top: 1px; }
+
+    .login-card h2 { font-family: 'Merriweather', serif; font-size: 1.5rem; color: var(--navy); margin-bottom: 6px; }
+    .login-card .subtitle { color: var(--muted); font-size: .9rem; margin-bottom: 28px; }
+
+    .field { margin-bottom: 18px; }
+    .field label { display: block; font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 6px; }
+    .field input { width: 100%; padding: 10px 13px; border: 1.5px solid var(--border); border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .95rem; outline: none; transition: border-color .2s; }
+    .field input:focus { border-color: var(--navy); }
+    #login-error { font-size: .85rem; color: var(--red); min-height: 18px; margin-bottom: 10px; }
+    .btn-uvm { width: 100%; padding: 12px; background: var(--navy); color: var(--white); border: none; border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .95rem; font-weight: 700; cursor: pointer; transition: background .2s; }
+    .btn-uvm:hover { background: var(--navy-hover); }
+
+    /* ═══════════════════════════════════════════════════════
+       APP SHELL
+    ═══════════════════════════════════════════════════════ */
+    #app { display: none; min-height: 100vh; flex-direction: column; }
+    #app.visible { display: flex; animation: fadeIn .35s ease; }
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+
+    /* ── Top Bar ── */
+    .topbar { background: var(--navy-dark); color: var(--white); padding: 0 28px; height: 54px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .topbar-brand { display: flex; align-items: center; gap: 13px; }
+    .topbar-shield { width: 30px; height: 30px; background: var(--white); clip-path: polygon(50% 0%,100% 15%,100% 60%,50% 100%,0% 60%,0% 15%); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .topbar-shield::after { content: 'V'; color: var(--navy); font-family: 'Merriweather', serif; font-size: 12px; font-weight: 700; }
+    .topbar-brand-text { border-left: 1px solid rgba(255,255,255,.2); padding-left: 13px; }
+    .topbar-brand-text .uni  { font-size: .68rem; color: rgba(255,255,255,.6); text-transform: uppercase; letter-spacing: .07em; }
+    .topbar-brand-text .dept { font-size: .84rem; font-weight: 600; }
+    .topbar-user { display: flex; align-items: center; gap: 10px; font-size: .84rem; color: rgba(255,255,255,.8); }
+    .role-chip { padding: 3px 10px; border-radius: 2px; font-size: .71rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .role-chip.admin { background: var(--gold); color: var(--navy-dark); }
+    .role-chip.user  { background: var(--green); color: white; }
+    .role-chip.read  { background: #555; color: white; }
+    .gold-bar { height: 5px; background: var(--gold); flex-shrink: 0; }
+
+    /* ── Side Nav + Content ── */
+    .app-body { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar Navigation ── */
+    .sidebar {
+      width: 220px; flex-shrink: 0;
+      background: var(--navy); color: var(--white);
+      display: flex; flex-direction: column;
+      overflow-y: auto;
+    }
+    .sidebar-section-label {
+      font-size: .68rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .1em; color: rgba(255,255,255,.4);
+      padding: 20px 18px 8px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 18px; cursor: pointer;
+      font-size: .88rem; font-weight: 600; color: rgba(255,255,255,.75);
+      border-left: 3px solid transparent;
+      transition: background .15s, color .15s, border-color .15s;
+      user-select: none;
+    }
+    .nav-item:hover { background: rgba(255,255,255,.07); color: white; }
+    .nav-item.active { background: rgba(255,255,255,.1); color: white; border-left-color: var(--gold); }
+    .nav-item .nav-icon { font-size: 1.1rem; flex-shrink: 0; }
+
+    .sidebar-divider { height: 1px; background: rgba(255,255,255,.1); margin: 10px 0; }
+
+    /* Printer sub-items */
+    .nav-sub-item {
+      display: flex; align-items: center; gap: 9px;
+      padding: 9px 18px 9px 36px; cursor: pointer;
+      font-size: .84rem; color: rgba(255,255,255,.6);
+      border-left: 3px solid transparent;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .nav-sub-item:hover { background: rgba(255,255,255,.06); color: rgba(255,255,255,.9); }
+    .nav-sub-item.active { color: white; border-left-color: var(--gold); }
+    .printer-dot-nav { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .pdot-0 { background: #6eaaff; }
+    .pdot-1 { background: #5dd68c; }
+    .pdot-2 { background: #f4a44b; }
+
+    /* ── Main Content ── */
+    .main-content { flex: 1; overflow-y: auto; }
+
+    /* ── Page (shown/hidden) ── */
+    .page { display: none; padding: 0; animation: fadeIn .2s ease; }
+    .page.active { display: block; }
+
+    /* ── Page Header ── */
+    .page-header { background: var(--white); border-bottom: 1px solid var(--border); padding: 22px 32px 18px; }
+    .breadcrumb { font-size: .74rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; }
+    .breadcrumb span { margin: 0 5px; }
+    .page-header h1 { font-family: 'Merriweather', serif; font-size: 1.7rem; color: var(--navy); margin-bottom: 4px; }
+    .page-header p  { color: var(--muted); font-size: .9rem; }
+
+    .page-body { padding: 28px 32px 60px; }
+
+    /* ═══════════════════════════════════════════════════════
+       DASHBOARD PAGE
+    ═══════════════════════════════════════════════════════ */
+    .dash-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 32px; }
+
+    .printer-summary-card {
+      background: var(--white); border: 1.5px solid var(--border); border-radius: 3px;
+      padding: 20px 22px; cursor: pointer;
+      transition: border-color .2s, box-shadow .2s, transform .15s;
+    }
+    .printer-summary-card:hover { border-color: var(--navy); box-shadow: 0 4px 16px rgba(0,0,0,.08); transform: translateY(-2px); }
+
+    .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .card-printer-name { font-family: 'Merriweather', serif; font-size: 1rem; color: var(--navy); }
+    .status-badge { font-size: .73rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 3px 9px; border-radius: 20px; }
+    .status-badge.free { background: var(--avail-bg); color: var(--avail-green); }
+    .status-badge.busy { background: var(--busy-bg); color: var(--busy-red); }
+
+    /* Fullness bar */
+    .fullness-label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+    .fullness-label .fl-text { font-size: .78rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .fullness-label .fl-pct  { font-size: 1.1rem; font-weight: 700; color: var(--navy); }
+    .fullness-track { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+    .fullness-fill { height: 100%; border-radius: 4px; transition: width .6s cubic-bezier(.22,1,.36,1); }
+    .fill-low    { background: var(--avail-green); }
+    .fill-medium { background: var(--gold); }
+    .fill-high   { background: var(--busy-red); }
+
+    .card-next { font-size: .8rem; color: var(--muted); margin-top: 4px; }
+    .card-cta { margin-top: 14px; font-size: .78rem; font-weight: 700; color: var(--navy); text-transform: uppercase; letter-spacing: .05em; }
+
+    /* Quick info box */
+    .info-box { background: var(--white); border: 1px solid var(--border); border-left: 4px solid var(--gold); border-radius: 2px; padding: 18px 22px; margin-bottom: 28px; }
+    .info-box h3 { font-family: 'Merriweather', serif; font-size: 1rem; color: var(--navy); margin-bottom: 6px; }
+    .info-box p  { font-size: .88rem; color: var(--muted); line-height: 1.6; }
+
+    /* ═══════════════════════════════════════════════════════
+       SCHEDULE PAGE (per printer)
+    ═══════════════════════════════════════════════════════ */
+    .schedule-header-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .printer-color-tag {
+      display: flex; align-items: center; gap: 8px;
+      font-size: .82rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted);
+    }
+    .printer-color-tag .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    /* Inline mini fullness for schedule page */
+    .mini-fullness { display: flex; align-items: center; gap: 10px; }
+    .mini-track { width: 120px; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .mini-fill  { height: 100%; border-radius: 4px; transition: width .6s; }
+    .mini-pct   { font-size: .82rem; font-weight: 700; color: var(--navy); }
+
+    .calendar-wrap { background: var(--white); border: 1px solid var(--border); border-radius: 3px; padding: 22px; }
+
+    /* FullCalendar overrides */
+    .fc .fc-toolbar-title { font-family: 'Merriweather', serif; font-size: 1.05rem; color: var(--navy); }
+    .fc .fc-button-primary { background: var(--navy) !important; border-color: var(--navy) !important; font-family: 'Source Sans 3', sans-serif !important; border-radius: 2px !important; font-size: .83rem !important; }
+    .fc .fc-button-primary:hover { background: var(--navy-hover) !important; }
+    .fc .fc-button-primary.fc-button-active { background: var(--gold) !important; border-color: var(--gold) !important; color: var(--navy-dark) !important; }
+    .fc .fc-col-header-cell { background: var(--navy-dark); }
+    .fc .fc-col-header-cell-cushion { color: rgba(255,255,255,.8); font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 8px 4px; }
+    .fc-timegrid-slot { height: 36px !important; }
+    .fc .fc-event { border-radius: 2px !important; font-size: .81rem !important; padding: 2px 6px !important; font-weight: 600 !important; cursor: pointer !important; }
+    .fc .fc-timegrid-now-indicator-line { border-color: var(--gold) !important; border-width: 2px !important; }
+
+    /* Per-printer colors */
+    #cal-0 .fc-event { background: #2457a0 !important; border-color: #1a3f7a !important; }
+    #cal-1 .fc-event { background: var(--green) !important; border-color: #004d2e !important; }
+    #cal-2 .fc-event { background: #8b4513 !important; border-color: #5a2d00 !important; }
+
+    /* ═══════════════════════════════════════════════════════
+       MY BOOKINGS PAGE
+    ═══════════════════════════════════════════════════════ */
+    .bookings-empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .bookings-empty .big-icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .bookings-empty p { font-size: .95rem; }
+
+    .booking-list { display: flex; flex-direction: column; gap: 10px; }
+    .booking-row {
+      background: var(--white); border: 1px solid var(--border); border-radius: 3px;
+      padding: 14px 18px; display: flex; align-items: center; gap: 16px;
+    }
+    .booking-row .br-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .booking-row .br-info { flex: 1; }
+    .booking-row .br-printer { font-weight: 700; font-size: .9rem; color: var(--navy); }
+    .booking-row .br-time    { font-size: .82rem; color: var(--muted); margin-top: 2px; }
+    .booking-row .br-delete  { background: none; border: 1.5px solid var(--border); border-radius: 2px; padding: 5px 12px; font-size: .78rem; font-weight: 700; color: var(--red); cursor: pointer; transition: background .2s, border-color .2s; }
+    .booking-row .br-delete:hover { background: var(--busy-bg); border-color: var(--busy-red); }
+
+    /* ═══════════════════════════════════════════════════════
+       MODALS
+    ═══════════════════════════════════════════════════════ */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(17,24,32,.55); display: none; align-items: center; justify-content: center; z-index: 500; }
+    .modal-overlay.open { display: flex; }
+    .modal-box { background: var(--white); border-top: 4px solid var(--gold); border-radius: 2px; padding: 32px 36px; max-width: 430px; width: 92%; box-shadow: 0 20px 60px rgba(0,0,0,.25); animation: rise .3s ease; }
+    .modal-box h3 { font-family: 'Merriweather', serif; font-size: 1.15rem; color: var(--navy); margin-bottom: 8px; }
+    .modal-box p  { color: var(--muted); font-size: .9rem; margin-bottom: 20px; line-height: 1.55; }
+    .modal-box .field input { width: 100%; padding: 10px 13px; border: 1.5px solid var(--border); border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .95rem; outline: none; transition: border-color .2s; }
+    .modal-box .field input:focus { border-color: var(--navy); }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+    .btn-cancel  { padding: 9px 20px; border: 1.5px solid var(--border); background: none; border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .9rem; font-weight: 600; color: var(--muted); cursor: pointer; transition: border-color .2s, color .2s; }
+    .btn-cancel:hover { border-color: var(--navy); color: var(--navy); }
+    .btn-confirm { padding: 9px 20px; background: var(--navy); color: var(--white); border: none; border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .9rem; font-weight: 700; cursor: pointer; transition: background .2s; }
+    .btn-confirm:hover { background: var(--navy-hover); }
+    .btn-delete  { padding: 9px 20px; background: var(--red); color: var(--white); border: none; border-radius: 2px; font-family: 'Source Sans 3', sans-serif; font-size: .9rem; font-weight: 700; cursor: pointer; transition: background .2s; }
+    .btn-delete:hover { background: #991b1b; }
+
+    /* ═══════════════════════════════════════════════════════
+       TOAST
+    ═══════════════════════════════════════════════════════ */
+    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px); background: var(--navy-dark); color: white; padding: 10px 22px; border-radius: 2px; font-size: .87rem; font-weight: 500; border-left: 4px solid var(--gold); box-shadow: 0 8px 28px rgba(0,0,0,.25); transition: transform .3s cubic-bezier(.22,1,.36,1), opacity .3s; opacity: 0; z-index: 999; pointer-events: none; white-space: nowrap; }
+    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+    /* ═══════════════════════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════════════════════ */
+    @media (max-width: 900px) {
+      .dash-grid { grid-template-columns: 1fr; }
+      .sidebar { width: 180px; }
+    }
+    @media (max-width: 640px) {
+      .app-body { flex-direction: column; }
+      .sidebar { width: 100%; flex-direction: row; overflow-x: auto; flex-wrap: nowrap; }
+      .sidebar-section-label { display: none; }
+      .nav-item, .nav-sub-item { padding: 12px 14px; border-left: none; border-bottom: 3px solid transparent; white-space: nowrap; }
+      .nav-item.active, .nav-sub-item.active { border-bottom-color: var(--gold); border-left-color: transparent; }
+      .sidebar-divider { display: none; }
+      .page-body { padding: 18px 14px 60px; }
+      .page-header { padding: 18px 14px 14px; }
+      .topbar { padding: 0 14px; }
+      .modal-box { padding: 24px 20px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     LOGIN
+════════════════════════════════════════════════════════════ -->
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="login-institution">
+      <div class="uvm-shield"></div>
+      <div class="login-institution-text">
+        <div class="uni">University of Vermont</div>
+        <div class="dept">College of Engineering &amp; Math Sciences</div>
+      </div>
+    </div>
+    <h2>Sign In</h2>
+    <p class="subtitle">GreenGATE 3D Printer Scheduler</p>
+    <div class="field"><label>Name</label><input type="text" id="login-name" placeholder="Your full name" autocomplete="off"/></div>
+    <div class="field"><label>PIN</label><input type="password" id="login-pin" placeholder="••••" maxlength="8"/></div>
+    <div id="login-error"></div>
+    <button class="btn-uvm" id="login-btn">Sign In</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     APP
+════════════════════════════════════════════════════════════ -->
+<div id="app">
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="topbar-brand">
+      <div class="topbar-shield"></div>
+      <div class="topbar-brand-text">
+        <div class="uni">University of Vermont</div>
+        <div class="dept">GreenGATE — 3D Printer Scheduler</div>
+      </div>
+    </div>
+    <div class="topbar-user">
+      <span id="user-name-display">—</span>
+      <span class="role-chip" id="user-role-display">—</span>
+    </div>
+  </div>
+  <div class="gold-bar"></div>
+
+  <div class="app-body">
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="sidebar-section-label">Navigation</div>
+      <div class="nav-item active" data-page="dashboard">
+        <span class="nav-icon">🖨</span> Dashboard
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-section-label">Printers</div>
+      <div class="nav-sub-item" data-page="schedule-0">
+        <span class="printer-dot-nav pdot-0"></span> Printer 1
+      </div>
+      <div class="nav-sub-item" data-page="schedule-1">
+        <span class="printer-dot-nav pdot-1"></span> Printer 2
+      </div>
+      <div class="nav-sub-item" data-page="schedule-2">
+        <span class="printer-dot-nav pdot-2"></span> Printer 3
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="nav-item" data-page="my-bookings">
+        <span class="nav-icon">📋</span> My Bookings
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+
+      <!-- ── DASHBOARD PAGE ── -->
+      <div class="page active" id="page-dashboard">
+        <div class="page-header">
+          <div class="breadcrumb">GreenGATE <span>›</span> Dashboard</div>
+          <h1>Dashboard</h1>
+          <p>Live availability and weekly capacity for all three printers.</p>
+        </div>
+        <div class="page-body">
+          <div class="info-box">
+            <h3>How to book</h3>
+            <p>Select a printer from the sidebar or click a card below. On the schedule page, click or drag any open time slot, enter your print duration, and your reservation is saved. Click an existing booking to delete it (if it's yours).</p>
+          </div>
+          <div class="dash-grid" id="dash-grid">
+            <!-- Cards injected by JS -->
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SCHEDULE PAGES (one per printer) ── -->
+      <div class="page" id="page-schedule-0">
+        <div class="page-header">
+          <div class="breadcrumb">GreenGATE <span>›</span> Printers <span>›</span> Printer 1</div>
+          <h1>Printer 1</h1>
+          <p>Click or drag an open slot to book. Click your reservation to delete it.</p>
+        </div>
+        <div class="page-body">
+          <div class="schedule-header-bar">
+            <div class="printer-color-tag"><div class="dot" style="background:#2457a0"></div> Printer 1 — This Week</div>
+            <div class="mini-fullness">
+              <div class="mini-track"><div class="mini-fill fill-low" id="mini-fill-0" style="width:0%"></div></div>
+              <span class="mini-pct" id="mini-pct-0">0% full</span>
+            </div>
+          </div>
+          <div class="calendar-wrap"><div id="cal-0"></div></div>
+        </div>
+      </div>
+
+      <div class="page" id="page-schedule-1">
+        <div class="page-header">
+          <div class="breadcrumb">GreenGATE <span>›</span> Printers <span>›</span> Printer 2</div>
+          <h1>Printer 2</h1>
+          <p>Click or drag an open slot to book. Click your reservation to delete it.</p>
+        </div>
+        <div class="page-body">
+          <div class="schedule-header-bar">
+            <div class="printer-color-tag"><div class="dot" style="background:#00613a"></div> Printer 2 — This Week</div>
+            <div class="mini-fullness">
+              <div class="mini-track"><div class="mini-fill fill-low" id="mini-fill-1" style="width:0%"></div></div>
+              <span class="mini-pct" id="mini-pct-1">0% full</span>
+            </div>
+          </div>
+          <div class="calendar-wrap"><div id="cal-1"></div></div>
+        </div>
+      </div>
+
+      <div class="page" id="page-schedule-2">
+        <div class="page-header">
+          <div class="breadcrumb">GreenGATE <span>›</span> Printers <span>›</span> Printer 3</div>
+          <h1>Printer 3</h1>
+          <p>Click or drag an open slot to book. Click your reservation to delete it.</p>
+        </div>
+        <div class="page-body">
+          <div class="schedule-header-bar">
+            <div class="printer-color-tag"><div class="dot" style="background:#8b4513"></div> Printer 3 — This Week</div>
+            <div class="mini-fullness">
+              <div class="mini-track"><div class="mini-fill fill-low" id="mini-fill-2" style="width:0%"></div></div>
+              <span class="mini-pct" id="mini-pct-2">0% full</span>
+            </div>
+          </div>
+          <div class="calendar-wrap"><div id="cal-2"></div></div>
+        </div>
+      </div>
+
+      <!-- ── MY BOOKINGS PAGE ── -->
+      <div class="page" id="page-my-bookings">
+        <div class="page-header">
+          <div class="breadcrumb">GreenGATE <span>›</span> My Bookings</div>
+          <h1>My Bookings</h1>
+          <p>All your upcoming reservations across all three printers.</p>
+        </div>
+        <div class="page-body">
+          <div id="bookings-container">
+            <div class="bookings-empty"><div class="big-icon">📭</div><p>No upcoming bookings.</p></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /main-content -->
+  </div><!-- /app-body -->
+</div><!-- /app -->
+
+<!-- Duration Modal -->
+<div class="modal-overlay" id="duration-modal">
+  <div class="modal-box">
+    <h3>New Reservation</h3>
+    <p id="duration-info"></p>
+    <div class="field"><label>Duration (minutes)</label><input type="number" id="duration-input" min="1" max="480" placeholder="e.g. 90"/></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="duration-cancel">Cancel</button>
+      <button class="btn-confirm" id="duration-confirm">Book Slot</button>
+    </div>
+  </div>
+</div>
+
+<!-- Choice Modal -->
+<div class="modal-overlay" id="choice-modal">
+  <div class="modal-box">
+    <h3 id="choice-title">Confirm</h3>
+    <p  id="choice-message"></p>
+    <div class="modal-actions">
+      <button class="btn-cancel"  id="choice-cancel">Cancel</button>
+      <button class="btn-confirm" id="choice-confirm">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Modal -->
+<div class="modal-overlay" id="delete-modal">
+  <div class="modal-box">
+    <h3>Delete Reservation</h3>
+    <p id="delete-message"></p>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="delete-cancel">Keep It</button>
+      <button class="btn-delete" id="delete-confirm">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════
+function toast(msg, ms=2800) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+function showModal(id) { document.getElementById(id).classList.add('open'); }
+function hideModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function choiceModal({ title='Confirm', message, confirmText='OK', cancelText='Cancel', danger=false }) {
+  return new Promise(resolve => {
+    document.getElementById('choice-title').textContent   = title;
+    document.getElementById('choice-message').textContent = message;
+    const ok = document.getElementById('choice-confirm');
+    const no = document.getElementById('choice-cancel');
+    ok.textContent = confirmText; no.textContent = cancelText;
+    ok.className = danger ? 'btn-delete' : 'btn-confirm';
+    showModal('choice-modal');
+    const yes = () => { cleanup(); resolve(true); };
+    const nop = () => { cleanup(); resolve(false); };
+    function cleanup() { hideModal('choice-modal'); ok.removeEventListener('click',yes); no.removeEventListener('click',nop); }
+    ok.addEventListener('click',yes); no.addEventListener('click',nop);
+  });
+}
+
+function deleteModal(label) {
+  return new Promise(resolve => {
+    document.getElementById('delete-message').textContent = `Are you sure you want to delete "${label}"?`;
+    showModal('delete-modal');
+    const yes = () => { cleanup(); resolve(true); };
+    const no  = () => { cleanup(); resolve(false); };
+    function cleanup() { hideModal('delete-modal'); document.getElementById('delete-confirm').removeEventListener('click',yes); document.getElementById('delete-cancel').removeEventListener('click',no); }
+    document.getElementById('delete-confirm').addEventListener('click',yes);
+    document.getElementById('delete-cancel').addEventListener('click',no);
+  });
+}
+
+function durationModal(printerName, timeStr) {
+  return new Promise(resolve => {
+    document.getElementById('duration-info').textContent = `Booking on ${printerName} at ${timeStr}. Enter how many minutes your print will take.`;
+    document.getElementById('duration-input').value = '';
+    showModal('duration-modal');
+    const ok  = document.getElementById('duration-confirm');
+    const no  = document.getElementById('duration-cancel');
+    const go  = () => {
+      const v = parseInt(document.getElementById('duration-input').value, 10);
+      if (!v || v <= 0) { toast('Please enter a valid number of minutes.'); return; }
+      cleanup(); resolve(v);
+    };
+    const cancel = () => { cleanup(); resolve(null); };
+    const key = e => { if (e.key==='Enter') go(); };
+    function cleanup() { hideModal('duration-modal'); ok.removeEventListener('click',go); no.removeEventListener('click',cancel); document.getElementById('duration-input').removeEventListener('keydown',key); }
+    ok.addEventListener('click',go); no.addEventListener('click',cancel);
+    document.getElementById('duration-input').addEventListener('keydown',key);
+    setTimeout(() => document.getElementById('duration-input').focus(), 80);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let currentUser = null;
+const PRINTER_NAMES  = ['Printer 1','Printer 2','Printer 3'];
+const PRINTER_COLORS = ['#2457a0','#00613a','#8b4513'];
+const calendars = [];
+
+// ═══════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════
+document.getElementById('login-btn').addEventListener('click', doLogin);
+document.getElementById('login-pin').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+function doLogin() {
+  const name  = document.getElementById('login-name').value.trim();
+  const pin   = document.getElementById('login-pin').value.trim();
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  if (!name || !pin) { errEl.textContent = 'Please enter your name and PIN.'; return; }
+
+  Papa.parse('users.csv', {
+    download: true, header: true,
+    complete: results => {
+      const user = results.data.find(u =>
+        u.name && u.name.toLowerCase().trim() === name.toLowerCase() &&
+        String(u.pin).trim() === String(pin).trim()
+      );
+      if (!user) { errEl.textContent = 'Name or PIN not found. Try again.'; return; }
+      currentUser = { name: user.name, role: (user.role||'read').toLowerCase().trim() };
+      launchApp();
+    },
+    error: () => {
+      currentUser = { name, role: 'read' };
+      errEl.textContent = 'Could not load users.csv — signed in as read-only.';
+      setTimeout(launchApp, 1000);
+    }
+  });
+}
+
+function launchApp() {
+  const ov = document.getElementById('login-overlay');
+  ov.classList.add('hidden');
+  setTimeout(() => ov.style.display='none', 400);
+  document.getElementById('app').classList.add('visible');
+  document.getElementById('user-name-display').textContent = currentUser.name;
+  const chip = document.getElementById('user-role-display');
+  chip.textContent = currentUser.role; chip.className = 'role-chip ' + currentUser.role;
+
+  buildDashCards();
+  initCalendars();
+  initNav();
+}
+
+// ═══════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════
+function initNav() {
+  document.querySelectorAll('[data-page]').forEach(el => {
+    el.addEventListener('click', () => navigateTo(el.dataset.page));
+  });
+}
+
+function navigateTo(pageId) {
+  // Update pages
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + pageId).classList.add('active');
+
+  // Update nav highlights
+  document.querySelectorAll('.nav-item, .nav-sub-item').forEach(el => el.classList.remove('active'));
+  const activeNavEl = document.querySelector(`[data-page="${pageId}"]`);
+  if (activeNavEl) activeNavEl.classList.add('active');
+
+  // Resize calendar if schedule page
+  if (pageId.startsWith('schedule-')) {
+    const idx = parseInt(pageId.split('-')[1]);
+    if (calendars[idx]) setTimeout(() => calendars[idx].updateSize(), 60);
+  }
+
+  // Refresh my bookings if navigating there
+  if (pageId === 'my-bookings') renderMyBookings();
+
+  // Refresh stats
+  updateAllStats();
+}
+
+// ═══════════════════════════════════════════════════════════
+// WEEKLY FULLNESS CALCULATION
+// ═══════════════════════════════════════════════════════════
+const AVAILABLE_HOURS_PER_DAY = 10; // 08:00–18:00
+const WORKING_DAYS_PER_WEEK   = 5;
+const TOTAL_MINS_PER_WEEK     = AVAILABLE_HOURS_PER_DAY * 60 * WORKING_DAYS_PER_WEEK; // 3000
+
+function getWeekBounds() {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+  monday.setHours(0,0,0,0);
+  const friday = new Date(monday);
+  friday.setDate(monday.getDate() + 4);
+  friday.setHours(23,59,59,999);
+  return { monday, friday };
+}
+
+function calcFullness(calIdx) {
+  if (!calendars[calIdx]) return 0;
+  const { monday, friday } = getWeekBounds();
+  const events = calendars[calIdx].getEvents().filter(e => e.extendedProps.type === 'reservation');
+  let bookedMins = 0;
+  events.forEach(ev => {
+    const start = ev.start, end = ev.end || new Date(ev.start.getTime()+30*60000);
+    // Only count events overlapping this week
+    if (end < monday || start > friday) return;
+    const clampedStart = start < monday ? monday : start;
+    const clampedEnd   = end   > friday ? friday : end;
+    bookedMins += (clampedEnd - clampedStart) / 60000;
+  });
+  return Math.min(100, Math.round((bookedMins / TOTAL_MINS_PER_WEEK) * 100));
+}
+
+function fillClass(pct) {
+  if (pct < 50) return 'fill-low';
+  if (pct < 80) return 'fill-medium';
+  return 'fill-high';
+}
+
+function updateAllStats() {
+  PRINTER_NAMES.forEach((_, i) => {
+    const pct = calcFullness(i);
+    const fc  = fillClass(pct);
+
+    // Dashboard card bars
+    const df = document.getElementById(`dash-fill-${i}`);
+    const dp = document.getElementById(`dash-pct-${i}`);
+    if (df) { df.style.width = pct+'%'; df.className = 'fullness-fill ' + fc; }
+    if (dp)   dp.textContent = pct+'%';
+
+    // Dashboard card status
+    const now = new Date();
+    const events = calendars[i] ? calendars[i].getEvents().filter(e=>e.extendedProps.type==='reservation') : [];
+    const busyNow = events.find(e => e.start<=now && (e.end||new Date(e.start.getTime()+30*60000))>now);
+    const badge = document.getElementById(`dash-badge-${i}`);
+    const nextEl = document.getElementById(`dash-next-${i}`);
+    if (badge) {
+      badge.textContent = busyNow ? 'In Use' : 'Available';
+      badge.className = 'status-badge ' + (busyNow ? 'busy' : 'free');
+    }
+    if (nextEl) {
+      if (busyNow) {
+        const freeAt = busyNow.end||new Date(busyNow.start.getTime()+30*60000);
+        nextEl.textContent = `Free at ${freeAt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+      } else {
+        const upcoming = events.filter(e=>e.start>now).sort((a,b)=>a.start-b.start)[0];
+        nextEl.textContent = upcoming ? `Next booking ${upcoming.start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}` : 'No more bookings today';
+      }
+    }
+
+    // Mini bars on schedule pages
+    const mf = document.getElementById(`mini-fill-${i}`);
+    const mp = document.getElementById(`mini-pct-${i}`);
+    if (mf) { mf.style.width = pct+'%'; mf.className = 'mini-fill ' + fc; }
+    if (mp)   mp.textContent = pct+'% full this week';
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// DASHBOARD CARDS
+// ═══════════════════════════════════════════════════════════
+function buildDashCards() {
+  const grid = document.getElementById('dash-grid');
+  PRINTER_NAMES.forEach((name, i) => {
+    const card = document.createElement('div');
+    card.className = 'printer-summary-card';
+    card.innerHTML = `
+      <div class="card-top">
+        <div class="card-printer-name">${name}</div>
+        <div class="status-badge free" id="dash-badge-${i}">Available</div>
+      </div>
+      <div class="fullness-label">
+        <span class="fl-text">Weekly capacity</span>
+        <span class="fl-pct" id="dash-pct-${i}">0%</span>
+      </div>
+      <div class="fullness-track">
+        <div class="fullness-fill fill-low" id="dash-fill-${i}" style="width:0%"></div>
+      </div>
+      <div class="card-next" id="dash-next-${i}">—</div>
+      <div class="card-cta">View schedule →</div>
+    `;
+    card.addEventListener('click', () => navigateTo('schedule-' + i));
+    grid.appendChild(card);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// MY BOOKINGS
+// ═══════════════════════════════════════════════════════════
+function renderMyBookings() {
+  const container = document.getElementById('bookings-container');
+  const now = new Date();
+  let allBookings = [];
+
+  calendars.forEach((cal, i) => {
+    cal.getEvents()
+      .filter(e => e.extendedProps.type==='reservation' && e.extendedProps.owner===currentUser.name && e.start>=now)
+      .forEach(e => allBookings.push({ cal, event: e, printerIdx: i }));
+  });
+
+  allBookings.sort((a,b) => a.event.start - b.event.start);
+
+  if (!allBookings.length) {
+    container.innerHTML = '<div class="bookings-empty"><div class="big-icon">📭</div><p>No upcoming bookings. Head to a printer page to book a slot.</p></div>';
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'booking-list';
+  allBookings.forEach(({ event: ev, printerIdx: pi }) => {
+    const row = document.createElement('div');
+    row.className = 'booking-row';
+    const start = ev.start.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    const end   = ev.end ? ev.end.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—';
+    const mins  = ev.end ? Math.round((ev.end-ev.start)/60000) : '?';
+    row.innerHTML = `
+      <div class="br-dot" style="background:${PRINTER_COLORS[pi]}"></div>
+      <div class="br-info">
+        <div class="br-printer">${PRINTER_NAMES[pi]}</div>
+        <div class="br-time">${start} – ${end} (${mins} min)</div>
+      </div>
+      <button class="br-delete">Delete</button>
+    `;
+    row.querySelector('.br-delete').addEventListener('click', async () => {
+      const confirmed = await deleteModal(`your reservation on ${PRINTER_NAMES[pi]}`);
+      if (confirmed) { ev.remove(); updateAllStats(); renderMyBookings(); toast('Reservation deleted.'); }
+    });
+    list.appendChild(row);
+  });
+  container.innerHTML = '';
+  container.appendChild(list);
+}
+
+// ═══════════════════════════════════════════════════════════
+// CALENDARS
+// ═══════════════════════════════════════════════════════════
+function makeCalendar(idx) {
+  const el = document.getElementById('cal-'+idx);
+  const printerName = PRINTER_NAMES[idx];
+
+  function hasConflict(skipEv, start, end) {
+    return calendars[idx].getEvents().some(ev => {
+      if (ev===skipEv || ev.extendedProps.type!=='reservation') return false;
+      const eS=ev.start, eE=ev.end||new Date(ev.start.getTime()+30*60000);
+      if (currentUser.role==='admin') return false;
+      if (ev.extendedProps.owner!==currentUser.name) return start<eE && end>eS;
+      return false;
+    });
+  }
+
+  const cal = new FullCalendar.Calendar(el, {
+    initialView: 'timeGridWeek',
+    selectable:  currentUser.role !== 'read',
+    editable:    currentUser.role !== 'read',
+    eventResizableFromStart: true,
+    height: 'auto', allDaySlot: false,
+    slotMinTime: '08:00:00', slotMaxTime: '18:00:00',
+    hiddenDays: [0,6], nowIndicator: true,
+    headerToolbar: { left:'prev,next today', center:'title', right:'timeGridWeek,timeGridDay' },
+    events: [],
+
+    select: async function(info) {
+      if (currentUser.role==='read') { toast('Read-only access — bookings not permitted.'); return; }
+      const timeStr = info.start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      const mins = await durationModal(printerName, timeStr);
+      if (!mins) return;
+      const end = new Date(info.start.getTime()+mins*60000);
+      if (hasConflict(null, info.start, end)) { toast('⚠ That slot conflicts with an existing booking.'); return; }
+      cal.addEvent({ title:currentUser.name, start:info.start, end, extendedProps:{type:'reservation',owner:currentUser.name} });
+      toast(`✓ Booked ${printerName} for ${mins} min`);
+      updateAllStats();
+    },
+
+    eventDrop: async function(info) {
+      const ev = info.event;
+      if (currentUser.role==='read') { info.revert(); return; }
+      if (currentUser.role!=='admin' && ev.extendedProps.owner!==currentUser.name) { toast('You can only move your own reservations.'); info.revert(); return; }
+      const end = ev.end||new Date(ev.start.getTime()+30*60000);
+      if (hasConflict(ev,ev.start,end)) {
+        const ok = await choiceModal({title:'Conflict',message:'This new time overlaps another booking. Move it anyway?',confirmText:'Move Anyway',cancelText:'Undo'});
+        if (!ok) info.revert();
+      } else toast('Reservation moved.');
+      updateAllStats();
+    },
+
+    eventResize: async function(info) {
+      const ev = info.event;
+      if (currentUser.role==='read') { info.revert(); return; }
+      if (currentUser.role!=='admin' && ev.extendedProps.owner!==currentUser.name) { toast('You can only resize your own reservations.'); info.revert(); return; }
+      const end = ev.end||new Date(ev.start.getTime()+30*60000);
+      if (hasConflict(ev,ev.start,end)) {
+        const ok = await choiceModal({title:'Conflict',message:'This resize overlaps another booking. Keep it anyway?',confirmText:'Keep',cancelText:'Undo'});
+        if (!ok) info.revert();
+      } else toast('Reservation updated.');
+      updateAllStats();
+    },
+
+    eventClick: async function(info) {
+      const ev = info.event;
+      if (currentUser.role==='read') { toast(`Booked by ${ev.extendedProps.owner}`); return; }
+      if (currentUser.role!=='admin' && ev.extendedProps.owner!==currentUser.name) { toast('You can only delete your own reservations.'); return; }
+      const confirmed = await deleteModal(`${ev.title}'s reservation`);
+      if (confirmed) { ev.remove(); toast('Deleted.'); updateAllStats(); }
+    }
+  });
+
+  cal.render();
+  return cal;
+}
+
+function initCalendars() {
+  for (let i=0; i<3; i++) calendars.push(makeCalendar(i));
+  updateAllStats();
+  setInterval(updateAllStats, 60000);
+}
+</script>
+</body>
+</html>
